@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+  />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#000000" />
+  <title>Card Magic — Stage 1</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+
+    body {
+      position: fixed;
+      inset: 0;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    #video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      background: #000;
+    }
+
+    #status {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+      text-align: center;
+      padding: 16px 24px;
+      background: rgba(0, 0, 0, 0.6);
+      border-radius: 10px;
+      pointer-events: none;
+      max-width: 80vw;
+      white-space: pre-line;
+      transition: opacity 0.3s ease;
+    }
+
+    #status.hidden {
+      opacity: 0;
+    }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="status">카메라 준비 중…</div>
+
+  <script>
+    const video = document.getElementById("video");
+    const statusEl = document.getElementById("status");
+
+    function showStatus(msg) {
+      statusEl.textContent = msg;
+      statusEl.classList.remove("hidden");
+    }
+
+    function hideStatus() {
+      statusEl.classList.add("hidden");
+    }
+
+    async function startCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showStatus("이 브라우저는 카메라 API를 지원하지 않습니다.\nSafari에서 열어주세요.");
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+
+        video.srcObject = stream;
+
+        // iOS Safari: 메타데이터 로드 후 명시적 play() 호출이 안정적
+        video.onloadedmetadata = () => {
+          video
+            .play()
+            .then(hideStatus)
+            .catch((err) => {
+              showStatus("영상 재생 실패\n" + (err.message || err.name));
+            });
+        };
+      } catch (err) {
+        let msg;
+        switch (err.name) {
+          case "NotAllowedError":
+            msg = "카메라 권한이 거부되었습니다.\n설정 > Safari > 카메라에서 허용해주세요.";
+            break;
+          case "NotFoundError":
+            msg = "카메라를 찾을 수 없습니다.";
+            break;
+          case "NotReadableError":
+            msg = "카메라가 다른 앱에서 사용 중입니다.";
+            break;
+          case "OverconstrainedError":
+            msg = "요청한 카메라 설정을 지원하지 않습니다.";
+            break;
+          default:
+            msg = "카메라 오류\n" + (err.message || err.name);
+        }
+        showStatus(msg);
+      }
+    }
+
+    startCamera();
+  </script>
+</body>
+</html>
