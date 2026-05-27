@@ -141,12 +141,14 @@
     // Universe 페이지의 "Versions" 탭에서 최신 버전 번호 확인 후 아래 숫자를 변경하세요.
     const ROBOFLOW_MODEL_ID = "playing-cards-ow27d";
     const ROBOFLOW_VERSION = 4;
-    const DETECT_INTERVAL_MS = 150;   // 호출 시도 간격 — 실제 fps는 응답에 의해 자연 제한
-    const KEEP_DETECTION_MS = 500;    // 박스 유지 시간 (다음 응답까지)
-    const DETECT_INPUT_WIDTH = 416;   // 모델 기본 입력 크기 — 작을수록 응답 빠름
-    const JPEG_QUALITY = 0.5;         // 0.5면 파일이 충분히 작고 정확도 거의 동일
-    const MIN_CONFIDENCE = 0.4;       // 이 미만 신뢰도는 무시
-    const LERP_FACTOR = 0.35;         // 박스 보간 — 매 프레임 목표로 35% 다가감 (부드러움)
+    const DETECT_INTERVAL_MS = 150;       // 호출 시도 간격 — 실제 fps는 응답에 의해 자연 제한
+    const KEEP_DETECTION_MS = 1500;       // 박스 유지 시간 — 예측으로 계속 이동하니까 길게 둠
+    const DETECT_INPUT_WIDTH = 416;       // 모델 기본 입력 크기
+    const JPEG_QUALITY = 0.5;
+    const MIN_CONFIDENCE = 0.4;
+    const LERP_FACTOR = 0.45;             // lerp 강도 — 부드럽지만 빠르게 따라옴
+    const PREDICT_FACTOR = 0.85;          // 예측 강도 0~1 (1=완전 예측, 0=예측 안 함)
+    const VELOCITY_SMOOTHING = 0.6;       // 새 측정 속도 비율 (EMA)
 
     // ===== DOM =====
     const video = document.getElementById("video");
@@ -230,8 +232,10 @@
       location.reload();
     };
 
-    // ===== 매 프레임: 거울 영상 + 검출 박스/라벨 (lerp 보간) =====
+    // ===== 매 프레임: 거울 영상 + 박스 (속도 예측 + lerp) =====
     function drawFrame() {
+      const now = performance.now();
+
       if (video.readyState >= video.HAVE_CURRENT_DATA) {
         // 카메라 영상 (좌우 반전)
         ctx.save();
@@ -239,10 +243,10 @@
         ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
         ctx.restore();
 
-        // 박스 보간 + 그리기
+        // 박스 예측 + 보간 + 그리기
         if (
           renderedDetections.length > 0 &&
-          performance.now() - lastDetectionAt < KEEP_DETECTION_MS
+          now - lastDetectionAt < KEEP_DETECTION_MS
         ) {
           const fontSize = Math.max(20, Math.round(canvas.width * 0.026));
           const padding = Math.max(6, canvas.width * 0.012);
@@ -251,9 +255,15 @@
           const lineWidth = Math.max(4, canvas.width * 0.005);
 
           for (const d of renderedDetections) {
-            // lerp: 현재 박스 위치를 목표 위치 쪽으로 매 프레임 LERP_FACTOR 만큼 끌어당김
-            d.box.x += (d.target.x - d.box.x) * LERP_FACTOR;
-            d.box.y += (d.target.y - d.box.y) * LERP_FACTOR;
+            // [예측] target 시각 이후 흐른 시간만큼 속도로 박스 이동
+            // → API 응답을 기다리는 동안에도 박스가 카드와 함께 흐름
+            const elapsed = now - d.lastTargetAt;
+            const predictedX = d.target.x + d.velocity.x * elapsed * PREDICT_FACTOR;
+            const predictedY = d.target.y + d.velocity.y * elapsed * PREDICT_FACTOR;
+
+            // [lerp] 현재 표시 위치를 예측 위치 쪽으로 부드럽게
+            d.box.x += (predictedX - d.box.x) * LERP_FACTOR;
+            d.box.y += (predictedY - d.box.y) * LERP_FACTOR;
             d.box.w += (d.target.w - d.box.w) * LERP_FACTOR;
             d.box.h += (d.target.h - d.box.h) * LERP_FACTOR;
 
@@ -388,18 +398,44 @@
             };
           });
 
-        // 클래스 기준 매칭: 같은 카드가 이미 표시 중이면 현재 위치 유지하고 목표만 갱신
-        // (그래야 카드가 움직일 때 박스가 그 위치에서 새 위치로 부드럽게 흐름)
+        // 클래스 기준 매칭 + 속도 계산
+        // 같은 카드의 이전 target과 비교해서 px/ms 단위 velocity 측정 → 다음 프레임 예측에 사용
+        const now = performance.now();
+        const maxV = canvas.width * 0.005; // 속도 cap: 너무 큰 측정 값은 자르기 (검출 튐 방지)
+
         renderedDetections = detections.map((d) => {
           const existing = renderedDetections.find((r) => r.class === d.class);
+          let velocity = { x: 0, y: 0 };
+          let currentBox = { ...d.targetBox };
+
+          if (existing) {
+            const dt = now - existing.lastTargetAt;
+            if (dt > 0 && dt < 1000) {
+              // raw 속도
+              const rawVx = (d.targetBox.x - existing.target.x) / dt;
+              const rawVy = (d.targetBox.y - existing.target.y) / dt;
+              // EMA 평활화 — 한 번의 튐으로 박스가 날아가지 않게
+              const a = VELOCITY_SMOOTHING;
+              const smoothedVx = a * rawVx + (1 - a) * existing.velocity.x;
+              const smoothedVy = a * rawVy + (1 - a) * existing.velocity.y;
+              // cap
+              velocity.x = Math.max(-maxV, Math.min(maxV, smoothedVx));
+              velocity.y = Math.max(-maxV, Math.min(maxV, smoothedVy));
+            }
+            // 같은 카드는 기존 표시 위치 유지 (lerp가 새 target으로 끌어당김)
+            currentBox = { ...existing.box };
+          }
+
           return {
             class: d.class,
             confidence: d.confidence,
-            box: existing ? { ...existing.box } : { ...d.targetBox }, // 현재 위치
-            target: d.targetBox,                                       // 목표 위치
+            box: currentBox,         // 현재 표시 위치
+            target: d.targetBox,     // 마지막 검출 위치
+            velocity,                // px/ms (예측에 사용)
+            lastTargetAt: now,       // target 갱신 시각
           };
         });
-        lastDetectionAt = performance.now();
+        lastDetectionAt = now;
 
         // 디버그 패널
         setDbg(
