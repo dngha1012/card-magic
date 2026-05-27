@@ -87,6 +87,7 @@
       line-height: 1.5;
       padding: 8px 10px;
       border-radius: 6px;
+      /* 자식 요소(.row)는 정보 표시만이라 클릭 막음. 버튼만 pointer-events 다시 켬 */
       pointer-events: none;
       z-index: 90;
       min-width: 160px;
@@ -101,6 +102,23 @@
     #debug .val.ok { color: #4caf50; }
     #debug .val.warn { color: #ffb74d; }
     #debug .val.bad { color: #ff5252; }
+    #reset-key-btn {
+      pointer-events: auto;
+      width: 100%;
+      margin-top: 6px;
+      padding: 6px 8px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 4px;
+      color: #fff;
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: rgba(255, 255, 255, 0.2);
+    }
+    #reset-key-btn:active {
+      background: rgba(255, 255, 255, 0.22);
+    }
   </style>
 </head>
 <body>
@@ -114,6 +132,7 @@
     <div class="row"><span class="label">검출</span><span class="val" id="dbg-count">-</span></div>
     <div class="row"><span class="label">응답</span><span class="val" id="dbg-latency">-</span></div>
     <div class="row"><span class="label">종류</span><span class="val" id="dbg-class">-</span></div>
+    <button id="reset-key-btn" type="button">🔑 API 키 재입력</button>
   </div>
 
   <script>
@@ -147,6 +166,7 @@
     let lastDetectionAt = 0;
     let isCalling = false;
     let detectTimer = null;
+    let keyPromptOpen = false;   // 401 자동 prompt 중복 방지
 
     // ===== UI =====
     function showStatus(msg) {
@@ -178,7 +198,30 @@
       }
       return key;
     }
-    // 디버깅용 — 콘솔에서 호출하면 키를 다시 입력 받게 함
+
+    // 키 재입력 (수동/자동 공용)
+    function promptForApiKey(reason) {
+      if (keyPromptOpen) return false;
+      keyPromptOpen = true;
+      try {
+        const msg = reason
+          ? `${reason}\nRoboflow API 키를 다시 입력하세요:`
+          : "Roboflow API 키를 입력하세요:";
+        const next = prompt(msg, apiKey || "");
+        if (next && next.trim()) {
+          apiKey = next.trim();
+          localStorage.setItem("roboflow_api_key", apiKey);
+          setDbg(dbgState, "탐색 중", "warn");
+          setDbg(dbgClass, "-");
+          return true;
+        }
+        return false;
+      } finally {
+        keyPromptOpen = false;
+      }
+    }
+
+    // 콘솔에서도 호출 가능 (이전 호환)
     window.resetApiKey = () => {
       localStorage.removeItem("roboflow_api_key");
       location.reload();
@@ -298,6 +341,13 @@
 
         if (!response.ok) {
           const errText = await response.text();
+          // 인증 관련 실패면 키 재입력 prompt 자동 띄움
+          if (response.status === 401 || response.status === 403) {
+            setDbg(dbgState, "키 오류", "bad");
+            setDbg(dbgClass, "키 재입력 필요");
+            promptForApiKey("API 키가 거부되었습니다.");
+            return;
+          }
           throw new Error(`HTTP ${response.status} ${errText.slice(0, 120)}`);
         }
 
@@ -384,6 +434,11 @@
         await startCamera();
         hideStatus();
         setDbg(dbgState, "탐색 중", "warn");
+
+        // 디버그 패널의 키 재입력 버튼
+        document
+          .getElementById("reset-key-btn")
+          .addEventListener("click", () => promptForApiKey());
 
         // 검출 루프 시작
         detectTimer = setInterval(detectCard, DETECT_INTERVAL_MS);
