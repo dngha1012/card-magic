@@ -35,33 +35,26 @@
       user-select: none;
     }
 
+    /* video는 스트림 수신 전용 — 화면 밖으로 숨김.
+       이렇게 하면 iOS Safari의 미디어 컨트롤(재생/일시정지/PIP 등)이
+       사용자에게 절대 표시되지 않음. */
     #video {
+      position: absolute;
+      top: -9999px;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* 사용자가 보는 건 canvas. 미디어 컨트롤 자체가 존재하지 않음. */
+    #canvas {
       width: 100%;
       height: 100%;
       object-fit: cover;
       display: block;
       background: #000;
-      /* 전면 카메라 거울 모드 */
-      transform: scaleX(-1);
-      /* 터치로 미디어 컨트롤이 트리거되지 않도록 차단 */
-      pointer-events: none;
-    }
-
-    /* iOS Safari가 띄우는 비디오 컨트롤(재생/일시정지/PIP 등) 강제 숨김 */
-    video::-webkit-media-controls,
-    video::-webkit-media-controls-panel,
-    video::-webkit-media-controls-play-button,
-    video::-webkit-media-controls-start-playback-button,
-    video::-webkit-media-controls-overlay-play-button,
-    video::-webkit-media-controls-enclosure,
-    video::-webkit-media-controls-fullscreen-button,
-    video::-webkit-media-controls-timeline,
-    video::-webkit-media-controls-current-time-display,
-    video::-webkit-media-controls-time-remaining-display {
-      display: none !important;
-      -webkit-appearance: none !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
     }
 
     #status {
@@ -89,21 +82,18 @@
   </style>
 </head>
 <body>
-  <video
-    id="video"
-    autoplay
-    playsinline
-    webkit-playsinline
-    muted
-    disablepictureinpicture
-    disableremoteplayback
-    controlslist="nodownload nofullscreen noremoteplayback noplaybackrate"
-    x-webkit-airplay="deny"
-  ></video>
+  <!-- 스트림 수신 전용 (화면에 안 보임) -->
+  <video id="video" autoplay playsinline muted></video>
+
+  <!-- 실제 화면에 보이는 것 -->
+  <canvas id="canvas"></canvas>
+
   <div id="status">카메라 준비 중…</div>
 
   <script>
     const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
     const statusEl = document.getElementById("status");
 
     function showStatus(msg) {
@@ -113,6 +103,18 @@
 
     function hideStatus() {
       statusEl.classList.add("hidden");
+    }
+
+    // 매 프레임 video → canvas 복사 (좌우 반전 포함)
+    function drawFrame() {
+      if (video.readyState >= video.HAVE_CURRENT_DATA) {
+        ctx.save();
+        // 거울 모드: canvas 좌표계를 가로로 뒤집어서 그림
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+        ctx.restore();
+      }
+      requestAnimationFrame(drawFrame);
     }
 
     async function startCamera() {
@@ -128,16 +130,22 @@
             width: { ideal: 1920 },
             height: { ideal: 1080 },
           },
-          audio: false, // 마이크 사용 안 함 — 마이크 인디케이터도 안 뜸
+          audio: false,
         });
 
         video.srcObject = stream;
 
-        // iOS Safari: 메타데이터 로드 후 명시적 play() 호출이 안정적
         video.onloadedmetadata = () => {
+          // canvas 내부 해상도를 비디오 원본 해상도와 동일하게
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+
           video
             .play()
-            .then(hideStatus)
+            .then(() => {
+              hideStatus();
+              drawFrame();
+            })
             .catch((err) => {
               showStatus("영상 재생 실패\n" + (err.message || err.name));
             });
