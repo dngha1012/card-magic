@@ -246,14 +246,16 @@
 
         // 그레이스케일
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        // 잡음 제거
-        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-        // 에지 검출 — 임계값을 낮춰서 약한 에지도 잡음
+        // [1] 강한 가우시안 블러로 카드 내부 문양(숫자/심볼) 뭉개기
+        //     — 약한 블러로는 앞면의 숫자/심볼이 강한 에지로 살아남아
+        //     카드 외곽선 대신 내부 사각형이 잡히는 문제가 있음
+        cv.GaussianBlur(gray, blurred, new cv.Size(11, 11), 3);
+        // 에지 검출
         cv.Canny(blurred, edges, 30, 100);
-        // morphology dilate — 끊긴 에지를 연결해서 폐곡선 만들기
+        // 끊긴 에지를 폐곡선으로 연결
         kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
         cv.dilate(edges, edges, kernel);
-        // 외곽선만 추출 (내부 contour 무시 — 빠름)
+        // 외곽선만 추출
         cv.findContours(
           edges,
           contours,
@@ -263,21 +265,21 @@
         );
 
         const totalContours = contours.size();
-        const minArea = canvas.width * canvas.height * 0.02; // 화면의 2%
+        // [3] 화면의 5% 이상인 컨투어만 카드 후보로 — 노이즈 제거
+        const minArea = canvas.width * canvas.height * 0.05;
         let quadCount = 0;
         let bestQuad = null;
         let maxArea = 0;
 
+        // [2] 모든 4각형 후보를 훑되, "가장 큰 것 하나"만 채택
         for (let i = 0; i < totalContours; i++) {
           const cnt = contours.get(i);
           const peri = cv.arcLength(cnt, true);
           const approx = new cv.Mat();
-          // epsilon 0.04 — 살짝 둥글게 단순화해서 4점이 잘 나옴
           cv.approxPolyDP(cnt, approx, 0.04 * peri, true);
 
           if (approx.rows === 4) {
             const area = cv.contourArea(approx);
-            // 볼록 4각형 + 충분히 큰 것만
             if (area > minArea && cv.isContourConvex(approx)) {
               quadCount++;
               if (area > maxArea) {
