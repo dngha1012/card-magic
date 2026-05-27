@@ -13,24 +13,18 @@
   <link rel="icon" href="icon.png" />
   <title>Card Magic</title>
   <style>
-    :root {
-      --yellow: #f4c42a;
-      --gray-pill: rgba(75, 75, 75, 0.92);
-      --gray-text: #b0b0b0;
-      --top-h: 17vh;
-      --bottom-h: 24vh;
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
     }
 
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    html, body {
+    html,
+    body {
       width: 100%;
       height: 100%;
       background: #000;
       overflow: hidden;
-      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue",
-        "Apple SD Gothic Neo", sans-serif;
-      color: #fff;
     }
 
     body {
@@ -41,402 +35,42 @@
       user-select: none;
     }
 
-    /* ===== 카메라 영상 ===== */
     #video {
-      position: absolute;
-      inset: 0;
       width: 100%;
       height: 100%;
       object-fit: cover;
+      display: block;
       background: #000;
+      /* 전면 카메라 거울 모드: 마술사가 자기 손 움직임을 자연스럽게 보기 위함 */
       transform: scaleX(-1);
-      z-index: 0;
     }
 
-    /* ===== 3x3 그리드 ===== */
-    .grid {
-      position: absolute;
-      top: var(--top-h);
-      bottom: var(--bottom-h);
-      left: 0;
-      right: 0;
-      pointer-events: none;
-      z-index: 5;
-    }
-    .grid-line { position: absolute; background: rgba(255, 255, 255, 0.20); }
-    .grid-line.h { left: 0; right: 0; height: 1px; }
-    .grid-line.v { top: 0; bottom: 0; width: 1px; }
-
-    /* ===== 자동초점 노란 십자 ===== */
-    .focus-cross {
-      position: absolute;
-      top: calc(var(--top-h) + (100vh - var(--top-h) - var(--bottom-h)) / 2);
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 38px;
-      height: 38px;
-      z-index: 6;
-      pointer-events: none;
-    }
-    .focus-cross::before, .focus-cross::after {
-      content: "";
-      position: absolute;
-      background: var(--yellow);
-      opacity: 0.9;
-    }
-    .focus-cross::before {
-      left: 50%; top: 0; bottom: 0;
-      width: 1.2px;
-      transform: translateX(-0.6px);
-    }
-    .focus-cross::after {
-      top: 50%; left: 0; right: 0;
-      height: 1.2px;
-      transform: translateY(-0.6px);
-    }
-
-    /* ===== 상단 바 ===== */
-    .top-bar {
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: var(--top-h);
-      background: #000;
-      z-index: 10;
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-end;
-      padding: env(safe-area-inset-top, 0) 18px 10px;
-    }
-    .top-row1 {
-      display: flex;
-      align-items: center;
-      margin-bottom: 8px;
-    }
-    .top-row2 {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .ev-text {
-      display: inline-flex;
-      align-items: baseline;
-      gap: 3px;
-      color: #fff;
-    }
-    .ev-text .lbl {
-      font-size: 11px;
-      font-weight: 600;
-      align-self: flex-start;
-      padding-top: 2px;
-    }
-    .ev-text .val {
-      font-size: 17px;
-      font-weight: 700;
-      letter-spacing: -0.3px;
-    }
-
-    .heif {
-      background: var(--gray-pill);
-      color: #fff;
-      font-size: 12px;
-      font-weight: 700;
-      padding: 7px 13px;
-      border-radius: 999px;
-      letter-spacing: 0.7px;
-    }
-
-    .top-icons {
-      display: flex;
-      align-items: center;
-      gap: 11px;
-    }
-    .icon-btn {
-      width: 32px;
-      height: 32px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-    }
-    .icon-btn.face {
-      background: var(--yellow);
-      border-radius: 9px;
-    }
-    .flash-a {
-      position: absolute;
-      bottom: 3px;
-      right: 4px;
-      font-size: 9px;
-      font-weight: 800;
-      color: #fff;
-      line-height: 1;
-    }
-
-    /* ===== 영상 우하단 보조 컨트롤 ===== */
-    .side-controls {
-      position: absolute;
-      right: 16px;
-      bottom: calc(var(--bottom-h) + 16px);
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      z-index: 8;
-    }
-    .side-btn {
-      width: 12vw;
-      height: 12vw;
-      max-width: 52px;
-      max-height: 52px;
-      min-width: 44px;
-      min-height: 44px;
-      border-radius: 50%;
-      background: rgba(45, 45, 45, 0.78);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #fff;
-    }
-    .side-btn .f-letter {
-      font-family: "Times New Roman", Georgia, serif;
-      font-style: italic;
-      font-size: 22px;
-      font-weight: 500;
-      line-height: 1;
-      transform: translateY(-1px);
-    }
-
-    /* ===== 하단 바 ===== */
-    .bottom-bar {
-      position: absolute;
-      bottom: 0; left: 0; right: 0;
-      height: var(--bottom-h);
-      background: #000;
-      z-index: 10;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: space-between;
-      padding: 22px 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
-    }
-
-    /* 셔터 — 원본은 단순 흰 원 */
-    .shutter {
-      width: 22vw;
-      height: 22vw;
-      max-width: 96px;
-      max-height: 96px;
-      min-width: 80px;
-      min-height: 80px;
-      border-radius: 50%;
-      background: #fff;
-      border: none;
-      padding: 0;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .shutter:active { background: #e5e5e5; }
-
-    /* 셔터 아래의 [갤러리][모드탭][전환] 행 */
-    .bottom-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      width: 100%;
-      max-width: 480px;
-    }
-
-    .gallery {
-      width: 13vw;
-      height: 13vw;
-      max-width: 54px;
-      max-height: 54px;
-      min-width: 42px;
-      min-height: 42px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, #b5aea0 0%, #d8d2c5 100%);
-      flex-shrink: 0;
-    }
-
-    /* 모드 탭 — 원본은 알약 배경 없이 텍스트만 */
-    .mode-tabs {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .mode {
-      padding: 8px 16px;
-      font-size: 15px;
-      font-weight: 500;
-      color: #c0c0c0;
-      border-radius: 14px;
-      line-height: 1;
-    }
-    .mode.active {
-      color: var(--yellow);
-      font-weight: 700;
-      background: rgba(255, 255, 255, 0.08);
-    }
-
-    .flip {
-      width: 13vw;
-      height: 13vw;
-      max-width: 56px;
-      max-height: 56px;
-      min-width: 44px;
-      min-height: 44px;
-      border-radius: 50%;
-      background: rgba(45, 45, 45, 0.78);
-      border: none;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      padding: 0;
-    }
-
-    /* ===== 상태 메시지 ===== */
     #status {
       position: fixed;
-      top: 45%; left: 50%;
+      top: 50%;
+      left: 50%;
       transform: translate(-50%, -50%);
       color: #fff;
-      font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 15px;
       line-height: 1.5;
       text-align: center;
-      padding: 14px 22px;
-      background: rgba(0, 0, 0, 0.7);
+      padding: 16px 24px;
+      background: rgba(0, 0, 0, 0.6);
       border-radius: 10px;
       pointer-events: none;
       max-width: 80vw;
       white-space: pre-line;
       transition: opacity 0.3s ease;
-      z-index: 100;
     }
-    #status.hidden { opacity: 0; }
+
+    #status.hidden {
+      opacity: 0;
+    }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
-
-  <div class="grid">
-    <div class="grid-line h" style="top: 33.33%"></div>
-    <div class="grid-line h" style="top: 66.66%"></div>
-    <div class="grid-line v" style="left: 33.33%"></div>
-    <div class="grid-line v" style="left: 66.66%"></div>
-  </div>
-
-  <div class="focus-cross"></div>
-
-  <header class="top-bar">
-    <div class="top-row1">
-      <div class="ev-text">
-        <span class="lbl">EV</span><span class="val">0.0</span>
-      </div>
-    </div>
-    <div class="top-row2">
-      <div class="heif">HEIF</div>
-      <div class="top-icons">
-        <span class="icon-btn face" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24">
-            <path d="M5 9V5h4 M15 5h4v4 M5 15v4h4 M19 15v4h-4"
-                  fill="none" stroke="#fff" stroke-width="1.8"
-                  stroke-linecap="round" stroke-linejoin="round"/>
-            <circle cx="12" cy="11" r="2.2" fill="#fff"/>
-            <path d="M7.6 17.6c0-2.4 2-3.8 4.4-3.8s4.4 1.4 4.4 3.8" fill="#fff"/>
-          </svg>
-        </span>
-        <span class="icon-btn" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff">
-            <path d="M20.5 14.5A8 8 0 0 1 9.5 3.5 8 8 0 1 0 20.5 14.5z"/>
-          </svg>
-        </span>
-        <span class="icon-btn" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff">
-            <polygon points="13,2 4,14 11,14 10,22 20,10 13,10"/>
-          </svg>
-          <span class="flash-a">A</span>
-        </span>
-        <span class="icon-btn" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24"
-               fill="none" stroke="#fff" stroke-width="1.8"
-               stroke-linecap="round">
-            <circle cx="12" cy="12" r="9"/>
-            <line x1="5.5" y1="5.5" x2="18.5" y2="18.5"/>
-          </svg>
-        </span>
-        <span class="icon-btn" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="#fff">
-            <circle cx="6" cy="6" r="2.2"/>
-            <circle cx="18" cy="6" r="2.2"/>
-            <circle cx="6" cy="18" r="2.2"/>
-            <circle cx="18" cy="18" r="2.2"/>
-          </svg>
-        </span>
-      </div>
-    </div>
-  </header>
-
-  <div class="side-controls">
-    <!-- f (조리개/매뉴얼) -->
-    <div class="side-btn" aria-hidden="true">
-      <span class="f-letter">f</span>
-    </div>
-    <!-- 양방향 대각선 화살표 (전체화면/비율) -->
-    <div class="side-btn" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24"
-           fill="none" stroke="#fff" stroke-width="2"
-           stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="9 4 4 4 4 9"/>
-        <line x1="4" y1="4" x2="11" y2="11"/>
-        <polyline points="15 20 20 20 20 15"/>
-        <line x1="20" y1="20" x2="13" y2="13"/>
-      </svg>
-    </div>
-    <!-- 사진 + 회전 화살표 (이미지 회전) -->
-    <div class="side-btn" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24"
-           fill="none" stroke="#fff" stroke-width="1.8"
-           stroke-linecap="round" stroke-linejoin="round">
-        <!-- 사진 프레임 -->
-        <rect x="7" y="9" width="14" height="11" rx="1.5"/>
-        <!-- 산 -->
-        <polyline points="7 16 11 13 15 17"/>
-        <!-- 작은 동그라미 -->
-        <circle cx="17" cy="12.5" r="1" fill="#fff"/>
-        <!-- 회전 화살표 (좌상단) -->
-        <path d="M11 4 A 4 4 0 0 0 4 8"/>
-        <polyline points="4 4.5 4 8 7 8"/>
-      </svg>
-    </div>
-  </div>
-
-  <footer class="bottom-bar">
-    <!-- 셔터 (위) -->
-    <button class="shutter" aria-label="셔터"></button>
-
-    <!-- [갤러리] [모드 탭 알약] [카메라 전환] -->
-    <div class="bottom-row">
-      <div class="gallery" aria-hidden="true"></div>
-      <div class="mode-tabs">
-        <span class="mode">비디오</span>
-        <span class="mode active">사진</span>
-      </div>
-      <button class="flip" aria-label="카메라 전환">
-        <svg width="24" height="24" viewBox="0 0 24 24"
-             fill="none" stroke="#fff" stroke-width="1.8"
-             stroke-linecap="round" stroke-linejoin="round">
-          <!-- 위쪽 곡선 화살표 (오른쪽으로) -->
-          <path d="M4 11 A 8 8 0 0 1 16 5"/>
-          <polyline points="13 3 16 5 14 8"/>
-          <!-- 아래쪽 곡선 화살표 (왼쪽으로) -->
-          <path d="M20 13 A 8 8 0 0 1 8 19"/>
-          <polyline points="11 21 8 19 10 16"/>
-        </svg>
-      </button>
-    </div>
-  </footer>
-
   <div id="status">카메라 준비 중…</div>
 
   <script>
@@ -447,6 +81,7 @@
       statusEl.textContent = msg;
       statusEl.classList.remove("hidden");
     }
+
     function hideStatus() {
       statusEl.classList.add("hidden");
     }
@@ -466,11 +101,17 @@
           },
           audio: false,
         });
+
         video.srcObject = stream;
+
+        // iOS Safari: 메타데이터 로드 후 명시적 play() 호출이 안정적
         video.onloadedmetadata = () => {
-          video.play().then(hideStatus).catch((err) => {
-            showStatus("영상 재생 실패\n" + (err.message || err.name));
-          });
+          video
+            .play()
+            .then(hideStatus)
+            .catch((err) => {
+              showStatus("영상 재생 실패\n" + (err.message || err.name));
+            });
         };
       } catch (err) {
         let msg;
