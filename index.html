@@ -76,7 +76,6 @@
       opacity: 0;
     }
 
-    /* 디버그 패널 (우상단) — 폰에서 콘솔 못 보니까 화면에 띄움 */
     #debug {
       position: fixed;
       top: calc(env(safe-area-inset-top, 8px) + 8px);
@@ -90,7 +89,7 @@
       border-radius: 6px;
       pointer-events: none;
       z-index: 90;
-      min-width: 140px;
+      min-width: 160px;
     }
     #debug .row {
       display: flex;
@@ -98,7 +97,7 @@
       gap: 10px;
     }
     #debug .label { color: #999; }
-    #debug .val { color: #fff; font-weight: 600; }
+    #debug .val { color: #fff; font-weight: 600; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #debug .val.ok { color: #4caf50; }
     #debug .val.warn { color: #ffb74d; }
     #debug .val.bad { color: #ff5252; }
@@ -112,32 +111,42 @@
 
   <div id="debug">
     <div class="row"><span class="label">상태</span><span class="val" id="dbg-state">초기화…</span></div>
-    <div class="row"><span class="label">컨투어</span><span class="val" id="dbg-contours">-</span></div>
-    <div class="row"><span class="label">4각형</span><span class="val" id="dbg-quads">-</span></div>
-    <div class="row"><span class="label">최대면적</span><span class="val" id="dbg-area">-</span></div>
-    <div class="row"><span class="label">FPS</span><span class="val" id="dbg-fps">-</span></div>
+    <div class="row"><span class="label">검출</span><span class="val" id="dbg-count">-</span></div>
+    <div class="row"><span class="label">응답</span><span class="val" id="dbg-latency">-</span></div>
+    <div class="row"><span class="label">종류</span><span class="val" id="dbg-class">-</span></div>
   </div>
 
   <script>
+    // ===== 설정 =====
+    // Universe 모델 URL: https://universe.roboflow.com/augmented-startups/playing-cards-ow27d
+    // Universe 페이지의 "Versions" 탭에서 최신 버전 번호 확인 후 아래 숫자를 변경하세요.
+    const ROBOFLOW_MODEL_ID = "playing-cards-ow27d";
+    const ROBOFLOW_VERSION = 4;
+    const DETECT_INTERVAL_MS = 350;   // 약 3 fps
+    const KEEP_DETECTION_MS = 1500;   // 박스 유지 시간 (다음 응답까지)
+    const DETECT_INPUT_WIDTH = 640;   // API로 보내는 이미지 다운스케일 폭
+    const MIN_CONFIDENCE = 0.4;       // 이 미만 신뢰도는 무시
+
+    // ===== DOM =====
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const ctx = canvas.getContext("2d");
     const statusEl = document.getElementById("status");
     const dbgState = document.getElementById("dbg-state");
-    const dbgContours = document.getElementById("dbg-contours");
-    const dbgQuads = document.getElementById("dbg-quads");
-    const dbgArea = document.getElementById("dbg-area");
-    const dbgFps = document.getElementById("dbg-fps");
+    const dbgCount = document.getElementById("dbg-count");
+    const dbgLatency = document.getElementById("dbg-latency");
+    const dbgClass = document.getElementById("dbg-class");
+
+    // 검출 전용 hidden canvas (정방향, 다운스케일)
+    const detectCanvas = document.createElement("canvas");
+    const detectCtx = detectCanvas.getContext("2d");
 
     // ===== 상태 =====
-    let opencvReady = false;
-    let latestQuad = null;
+    let apiKey = null;
+    let latestDetections = [];   // [{class, confidence, box: {x, y, w, h}}]
     let lastDetectionAt = 0;
-    const KEEP_DETECTION_MS = 400; // 검출 결과를 이 시간 동안 유지 (지글거림 방지)
-
-    // FPS 측정용
-    let detectCount = 0;
-    let lastFpsAt = performance.now();
+    let isCalling = false;
+    let detectTimer = null;
 
     // ===== UI =====
     function showStatus(msg) {
@@ -148,31 +157,77 @@
       statusEl.classList.add("hidden");
     }
     function setDbg(el, text, cls) {
+      if (!el) return;
       el.textContent = text;
       el.classList.remove("ok", "warn", "bad");
       if (cls) el.classList.add(cls);
     }
 
-    // ===== 매 프레임 그리기 (60fps) =====
+    // ===== API 키 (localStorage 보관) =====
+    function loadApiKey() {
+      let key = localStorage.getItem("roboflow_api_key");
+      if (!key) {
+        key = prompt(
+          "Roboflow API 키를 입력하세요.\n" +
+          "(https://app.roboflow.com → Settings → Roboflow API)"
+        );
+        if (key) {
+          key = key.trim();
+          localStorage.setItem("roboflow_api_key", key);
+        }
+      }
+      return key;
+    }
+    // 디버깅용 — 콘솔에서 호출하면 키를 다시 입력 받게 함
+    window.resetApiKey = () => {
+      localStorage.removeItem("roboflow_api_key");
+      location.reload();
+    };
+
+    // ===== 매 프레임: 거울 영상 + 검출 박스/라벨 =====
     function drawFrame() {
       if (video.readyState >= video.HAVE_CURRENT_DATA) {
+        // 카메라 영상 (좌우 반전)
         ctx.save();
         ctx.scale(-1, 1);
         ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
         ctx.restore();
 
-        // 최근 검출 결과를 KEEP_DETECTION_MS 동안 유지 — 깜빡임 방지
-        if (latestQuad && performance.now() - lastDetectionAt < KEEP_DETECTION_MS) {
-          ctx.strokeStyle = "#ff0000";
-          ctx.lineWidth = Math.max(4, canvas.width * 0.006);
-          ctx.lineJoin = "round";
-          ctx.beginPath();
-          ctx.moveTo(latestQuad[0].x, latestQuad[0].y);
-          for (let i = 1; i < latestQuad.length; i++) {
-            ctx.lineTo(latestQuad[i].x, latestQuad[i].y);
+        // 최근 검출 결과 그리기
+        if (
+          latestDetections.length > 0 &&
+          performance.now() - lastDetectionAt < KEEP_DETECTION_MS
+        ) {
+          const fontSize = Math.max(20, Math.round(canvas.width * 0.026));
+          const padding = Math.max(6, canvas.width * 0.012);
+          const labelHeight = Math.round(fontSize * 1.55);
+          ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
+          const lineWidth = Math.max(4, canvas.width * 0.005);
+
+          for (const d of latestDetections) {
+            const { x, y, w, h } = d.box;
+
+            // 박스
+            ctx.strokeStyle = "#ff0000";
+            ctx.lineWidth = lineWidth;
+            ctx.lineJoin = "round";
+            ctx.strokeRect(x, y, w, h);
+
+            // 라벨: "5H 92%" 형태
+            const label = `${d.class}  ${Math.round(d.confidence * 100)}%`;
+            const metrics = ctx.measureText(label);
+            const labelW = metrics.width + padding * 2;
+
+            // 라벨이 박스 위로 나가면 박스 안쪽 상단에 그림
+            const labelY = y - labelHeight >= 0 ? y - labelHeight : y;
+
+            ctx.fillStyle = "#ff0000";
+            ctx.fillRect(x, labelY, labelW, labelHeight);
+
+            ctx.fillStyle = "#fff";
+            ctx.textBaseline = "middle";
+            ctx.fillText(label, x + padding, labelY + labelHeight / 2);
           }
-          ctx.closePath();
-          ctx.stroke();
         }
       }
       requestAnimationFrame(drawFrame);
@@ -198,6 +253,12 @@
           video.onloadedmetadata = () => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
+
+            // 검출 canvas는 다운스케일된 정방향
+            const scale = DETECT_INPUT_WIDTH / video.videoWidth;
+            detectCanvas.width = DETECT_INPUT_WIDTH;
+            detectCanvas.height = Math.round(video.videoHeight * scale);
+
             video
               .play()
               .then(() => {
@@ -212,149 +273,120 @@
       });
     }
 
-    // ===== OpenCV.js 로드 =====
-    function loadOpenCV() {
-      return new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = "https://docs.opencv.org/4.8.0/opencv.js";
-        script.async = true;
-        script.onload = () => {
-          if (window.cv && window.cv.Mat) {
-            resolve();
-          } else {
-            window.cv["onRuntimeInitialized"] = () => resolve();
-          }
-        };
-        script.onerror = () =>
-          reject(new Error("OpenCV.js 로드 실패\n네트워크 연결을 확인해주세요."));
-        document.head.appendChild(script);
-      });
-    }
+    // ===== Roboflow API 호출 =====
+    async function detectCard() {
+      if (isCalling) return;
+      if (!apiKey) return;
+      if (canvas.width === 0) return;
 
-    // ===== 카드 검출 =====
-    function detectCard() {
-      if (!opencvReady || canvas.width === 0) return;
+      isCalling = true;
+      const t0 = performance.now();
 
-      let src, gray, blurred, edges, contours, hierarchy, kernel;
       try {
-        src = cv.imread(canvas);
-        gray = new cv.Mat();
-        blurred = new cv.Mat();
-        edges = new cv.Mat();
-        contours = new cv.MatVector();
-        hierarchy = new cv.Mat();
+        // 정방향 + 다운스케일 — 카드는 좌우 비대칭이라 거울 영상은 모델이 못 알아봄
+        detectCtx.drawImage(video, 0, 0, detectCanvas.width, detectCanvas.height);
+        const base64 = detectCanvas.toDataURL("image/jpeg", 0.7).split(",")[1];
 
-        // 그레이스케일
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        // [1] 강한 가우시안 블러로 카드 내부 문양(숫자/심볼) 뭉개기
-        //     — 약한 블러로는 앞면의 숫자/심볼이 강한 에지로 살아남아
-        //     카드 외곽선 대신 내부 사각형이 잡히는 문제가 있음
-        cv.GaussianBlur(gray, blurred, new cv.Size(11, 11), 3);
-        // 에지 검출
-        cv.Canny(blurred, edges, 30, 100);
-        // 끊긴 에지를 폐곡선으로 연결
-        kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-        cv.dilate(edges, edges, kernel);
-        // 외곽선만 추출
-        cv.findContours(
-          edges,
-          contours,
-          hierarchy,
-          cv.RETR_EXTERNAL,
-          cv.CHAIN_APPROX_SIMPLE
-        );
+        setDbg(dbgState, "호출 중", "warn");
 
-        const totalContours = contours.size();
-        // [3] 화면의 5% 이상인 컨투어만 카드 후보로 — 노이즈 제거
-        const minArea = canvas.width * canvas.height * 0.05;
-        let quadCount = 0;
-        let bestQuad = null;
-        let maxArea = 0;
+        const url = `https://detect.roboflow.com/${ROBOFLOW_MODEL_ID}/${ROBOFLOW_VERSION}?api_key=${encodeURIComponent(apiKey)}`;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: base64,
+        });
 
-        // [2] 모든 4각형 후보를 훑되, "가장 큰 것 하나"만 채택
-        for (let i = 0; i < totalContours; i++) {
-          const cnt = contours.get(i);
-          const peri = cv.arcLength(cnt, true);
-          const approx = new cv.Mat();
-          cv.approxPolyDP(cnt, approx, 0.04 * peri, true);
-
-          if (approx.rows === 4) {
-            const area = cv.contourArea(approx);
-            if (area > minArea && cv.isContourConvex(approx)) {
-              quadCount++;
-              if (area > maxArea) {
-                maxArea = area;
-                const pts = [];
-                for (let j = 0; j < 4; j++) {
-                  pts.push({
-                    x: approx.data32S[j * 2],
-                    y: approx.data32S[j * 2 + 1],
-                  });
-                }
-                bestQuad = pts;
-              }
-            }
-          }
-          approx.delete();
-          cnt.delete();
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`HTTP ${response.status} ${errText.slice(0, 120)}`);
         }
 
-        // 디버그 패널 업데이트
-        setDbg(dbgContours, String(totalContours));
-        setDbg(dbgQuads, String(quadCount), quadCount > 0 ? "ok" : "warn");
+        const result = await response.json();
+        const elapsed = performance.now() - t0;
+
+        // 좌표 변환:
+        //   API 좌표 (검출 canvas, 정방향, 다운스케일)
+        //   → 표시 canvas (원본 크기, 거울 반전)
+        const scaleUp = video.videoWidth / detectCanvas.width;
+        const W = canvas.width;
+
+        const detections = (result.predictions || [])
+          .filter((p) => p.confidence >= MIN_CONFIDENCE)
+          .map((p) => {
+            const xMin = (p.x - p.width / 2) * scaleUp;
+            const xMax = (p.x + p.width / 2) * scaleUp;
+            const yMin = (p.y - p.height / 2) * scaleUp;
+            const yMax = (p.y + p.height / 2) * scaleUp;
+
+            // X축 거울 반전
+            return {
+              class: p.class,
+              confidence: p.confidence,
+              box: {
+                x: W - xMax,
+                y: yMin,
+                w: xMax - xMin,
+                h: yMax - yMin,
+              },
+            };
+          });
+
+        latestDetections = detections;
+        lastDetectionAt = performance.now();
+
+        // 디버그 패널
         setDbg(
-          dbgArea,
-          bestQuad
-            ? `${(maxArea / (canvas.width * canvas.height) * 100).toFixed(1)}%`
+          dbgState,
+          detections.length > 0 ? "검출됨" : "탐색 중",
+          detections.length > 0 ? "ok" : "warn"
+        );
+        setDbg(dbgCount, String(detections.length));
+        setDbg(dbgLatency, `${elapsed.toFixed(0)}ms`);
+        setDbg(
+          dbgClass,
+          detections.length > 0
+            ? detections.map((d) => d.class).join(", ")
             : "-"
         );
 
-        if (bestQuad) {
-          latestQuad = bestQuad;
-          lastDetectionAt = performance.now();
-          setDbg(dbgState, "검출됨", "ok");
-          console.log("🃏 카드 모서리 4점:", bestQuad);
-        } else {
-          setDbg(dbgState, "탐색 중", "warn");
-        }
-
-        // FPS 측정 (1초마다 갱신)
-        detectCount++;
-        const now = performance.now();
-        if (now - lastFpsAt >= 1000) {
-          const fps = (detectCount * 1000) / (now - lastFpsAt);
-          setDbg(dbgFps, fps.toFixed(1));
-          detectCount = 0;
-          lastFpsAt = now;
+        // 콘솔
+        if (detections.length > 0) {
+          console.log(
+            `🃏 ${detections.length}장 검출 (${elapsed.toFixed(0)}ms):`,
+            detections.map((d) => `${d.class} ${(d.confidence * 100).toFixed(0)}%`).join(", ")
+          );
+          detections.forEach((d) => {
+            console.log(
+              `  ${d.class} (${(d.confidence * 100).toFixed(1)}%):`,
+              `x=${d.box.x.toFixed(0)} y=${d.box.y.toFixed(0)} w=${d.box.w.toFixed(0)} h=${d.box.h.toFixed(0)}`
+            );
+          });
         }
       } catch (err) {
-        console.error("카드 검출 오류:", err);
+        console.error("Roboflow API 오류:", err);
         setDbg(dbgState, "오류", "bad");
+        setDbg(dbgClass, (err.message || "unknown").slice(0, 30));
       } finally {
-        if (src) src.delete();
-        if (gray) gray.delete();
-        if (blurred) blurred.delete();
-        if (edges) edges.delete();
-        if (contours) contours.delete();
-        if (hierarchy) hierarchy.delete();
-        if (kernel) kernel.delete();
+        isCalling = false;
       }
     }
 
     // ===== 초기화 =====
     async function init() {
       try {
-        setDbg(dbgState, "카메라 시작…");
+        apiKey = loadApiKey();
+        if (!apiKey) {
+          showStatus("API 키가 입력되지 않았습니다.\n페이지를 새로고침해서 다시 입력해주세요.\n\n콘솔에서 resetApiKey() 호출 시 재입력");
+          return;
+        }
+
+        setDbg(dbgState, "카메라 시작…", "warn");
         await startCamera();
-        setDbg(dbgState, "OpenCV 로딩…", "warn");
-        showStatus("OpenCV 로딩 중…\n(8MB, 첫 실행 시 시간이 걸려요)");
-        await loadOpenCV();
-        opencvReady = true;
-        setDbg(dbgState, "탐색 중", "warn");
-        console.log("OpenCV.js 준비 완료, 카드 검출 시작");
         hideStatus();
-        // 5fps 검출 루프
-        setInterval(detectCard, 200);
+        setDbg(dbgState, "탐색 중", "warn");
+
+        // 검출 루프 시작
+        detectTimer = setInterval(detectCard, DETECT_INTERVAL_MS);
       } catch (err) {
         console.error(err);
         let msg = err.message || err.name || "알 수 없는 오류";
