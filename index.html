@@ -141,10 +141,12 @@
     // Universe 페이지의 "Versions" 탭에서 최신 버전 번호 확인 후 아래 숫자를 변경하세요.
     const ROBOFLOW_MODEL_ID = "playing-cards-ow27d";
     const ROBOFLOW_VERSION = 4;
-    const DETECT_INTERVAL_MS = 350;   // 약 3 fps
-    const KEEP_DETECTION_MS = 1500;   // 박스 유지 시간 (다음 응답까지)
-    const DETECT_INPUT_WIDTH = 640;   // API로 보내는 이미지 다운스케일 폭
+    const DETECT_INTERVAL_MS = 150;   // 호출 시도 간격 — 실제 fps는 응답에 의해 자연 제한
+    const KEEP_DETECTION_MS = 500;    // 박스 유지 시간 (다음 응답까지)
+    const DETECT_INPUT_WIDTH = 416;   // 모델 기본 입력 크기 — 작을수록 응답 빠름
+    const JPEG_QUALITY = 0.5;         // 0.5면 파일이 충분히 작고 정확도 거의 동일
     const MIN_CONFIDENCE = 0.4;       // 이 미만 신뢰도는 무시
+    const LERP_FACTOR = 0.35;         // 박스 보간 — 매 프레임 목표로 35% 다가감 (부드러움)
 
     // ===== DOM =====
     const video = document.getElementById("video");
@@ -162,7 +164,8 @@
 
     // ===== 상태 =====
     let apiKey = null;
-    let latestDetections = [];   // [{class, confidence, box: {x, y, w, h}}]
+    // 표시 박스: box(현재 표시 위치, lerp로 부드럽게 이동) + target(API에서 받은 목표 위치)
+    let renderedDetections = []; // [{class, confidence, box: {x,y,w,h}, target: {x,y,w,h}}]
     let lastDetectionAt = 0;
     let isCalling = false;
     let detectTimer = null;
@@ -227,7 +230,7 @@
       location.reload();
     };
 
-    // ===== 매 프레임: 거울 영상 + 검출 박스/라벨 =====
+    // ===== 매 프레임: 거울 영상 + 검출 박스/라벨 (lerp 보간) =====
     function drawFrame() {
       if (video.readyState >= video.HAVE_CURRENT_DATA) {
         // 카메라 영상 (좌우 반전)
@@ -236,9 +239,9 @@
         ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
         ctx.restore();
 
-        // 최근 검출 결과 그리기
+        // 박스 보간 + 그리기
         if (
-          latestDetections.length > 0 &&
+          renderedDetections.length > 0 &&
           performance.now() - lastDetectionAt < KEEP_DETECTION_MS
         ) {
           const fontSize = Math.max(20, Math.round(canvas.width * 0.026));
@@ -247,7 +250,13 @@
           ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
           const lineWidth = Math.max(4, canvas.width * 0.005);
 
-          for (const d of latestDetections) {
+          for (const d of renderedDetections) {
+            // lerp: 현재 박스 위치를 목표 위치 쪽으로 매 프레임 LERP_FACTOR 만큼 끌어당김
+            d.box.x += (d.target.x - d.box.x) * LERP_FACTOR;
+            d.box.y += (d.target.y - d.box.y) * LERP_FACTOR;
+            d.box.w += (d.target.w - d.box.w) * LERP_FACTOR;
+            d.box.h += (d.target.h - d.box.h) * LERP_FACTOR;
+
             const { x, y, w, h } = d.box;
 
             // 박스
@@ -256,12 +265,10 @@
             ctx.lineJoin = "round";
             ctx.strokeRect(x, y, w, h);
 
-            // 라벨: "5H 92%" 형태
+            // 라벨
             const label = `${d.class}  ${Math.round(d.confidence * 100)}%`;
             const metrics = ctx.measureText(label);
             const labelW = metrics.width + padding * 2;
-
-            // 라벨이 박스 위로 나가면 박스 안쪽 상단에 그림
             const labelY = y - labelHeight >= 0 ? y - labelHeight : y;
 
             ctx.fillStyle = "#ff0000";
@@ -328,7 +335,7 @@
       try {
         // 정방향 + 다운스케일 — 카드는 좌우 비대칭이라 거울 영상은 모델이 못 알아봄
         detectCtx.drawImage(video, 0, 0, detectCanvas.width, detectCanvas.height);
-        const base64 = detectCanvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+        const base64 = detectCanvas.toDataURL("image/jpeg", JPEG_QUALITY).split(",")[1];
 
         setDbg(dbgState, "호출 중", "warn");
 
@@ -372,7 +379,7 @@
             return {
               class: p.class,
               confidence: p.confidence,
-              box: {
+              targetBox: {
                 x: W - xMax,
                 y: yMin,
                 w: xMax - xMin,
@@ -381,7 +388,17 @@
             };
           });
 
-        latestDetections = detections;
+        // 클래스 기준 매칭: 같은 카드가 이미 표시 중이면 현재 위치 유지하고 목표만 갱신
+        // (그래야 카드가 움직일 때 박스가 그 위치에서 새 위치로 부드럽게 흐름)
+        renderedDetections = detections.map((d) => {
+          const existing = renderedDetections.find((r) => r.class === d.class);
+          return {
+            class: d.class,
+            confidence: d.confidence,
+            box: existing ? { ...existing.box } : { ...d.targetBox }, // 현재 위치
+            target: d.targetBox,                                       // 목표 위치
+          };
+        });
         lastDetectionAt = performance.now();
 
         // 디버그 패널
@@ -406,9 +423,10 @@
             detections.map((d) => `${d.class} ${(d.confidence * 100).toFixed(0)}%`).join(", ")
           );
           detections.forEach((d) => {
+            const b = d.targetBox;
             console.log(
               `  ${d.class} (${(d.confidence * 100).toFixed(1)}%):`,
-              `x=${d.box.x.toFixed(0)} y=${d.box.y.toFixed(0)} w=${d.box.w.toFixed(0)} h=${d.box.h.toFixed(0)}`
+              `x=${b.x.toFixed(0)} y=${b.y.toFixed(0)} w=${b.w.toFixed(0)} h=${b.h.toFixed(0)}`
             );
           });
         }
