@@ -35,7 +35,6 @@
       user-select: none;
     }
 
-    /* video는 스트림 수신 전용 — 화면 밖으로 숨김 */
     #video {
       position: absolute;
       top: -9999px;
@@ -46,7 +45,6 @@
       pointer-events: none;
     }
 
-    /* 사용자가 보는 건 canvas */
     #canvas {
       width: 100%;
       height: 100%;
@@ -72,31 +70,76 @@
       max-width: 80vw;
       white-space: pre-line;
       transition: opacity 0.3s ease;
+      z-index: 100;
     }
-
     #status.hidden {
       opacity: 0;
     }
+
+    /* 디버그 패널 (우상단) — 폰에서 콘솔 못 보니까 화면에 띄움 */
+    #debug {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 8px) + 8px);
+      right: 8px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #fff;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      padding: 8px 10px;
+      border-radius: 6px;
+      pointer-events: none;
+      z-index: 90;
+      min-width: 140px;
+    }
+    #debug .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    #debug .label { color: #999; }
+    #debug .val { color: #fff; font-weight: 600; }
+    #debug .val.ok { color: #4caf50; }
+    #debug .val.warn { color: #ffb74d; }
+    #debug .val.bad { color: #ff5252; }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
+
   <div id="status">카메라 준비 중…</div>
+
+  <div id="debug">
+    <div class="row"><span class="label">상태</span><span class="val" id="dbg-state">초기화…</span></div>
+    <div class="row"><span class="label">컨투어</span><span class="val" id="dbg-contours">-</span></div>
+    <div class="row"><span class="label">4각형</span><span class="val" id="dbg-quads">-</span></div>
+    <div class="row"><span class="label">최대면적</span><span class="val" id="dbg-area">-</span></div>
+    <div class="row"><span class="label">FPS</span><span class="val" id="dbg-fps">-</span></div>
+  </div>
 
   <script>
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
-    // willReadFrequently: cv.imread가 매 검출마다 canvas를 읽으므로 성능 힌트
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const statusEl = document.getElementById("status");
+    const dbgState = document.getElementById("dbg-state");
+    const dbgContours = document.getElementById("dbg-contours");
+    const dbgQuads = document.getElementById("dbg-quads");
+    const dbgArea = document.getElementById("dbg-area");
+    const dbgFps = document.getElementById("dbg-fps");
 
     // ===== 상태 =====
     let opencvReady = false;
-    let latestQuad = null;          // 최근 검출된 카드의 4 모서리 [{x,y}, ...]
-    let detectionTimer = null;
+    let latestQuad = null;
+    let lastDetectionAt = 0;
+    const KEEP_DETECTION_MS = 400; // 검출 결과를 이 시간 동안 유지 (지글거림 방지)
 
-    // ===== UI 도우미 =====
+    // FPS 측정용
+    let detectCount = 0;
+    let lastFpsAt = performance.now();
+
+    // ===== UI =====
     function showStatus(msg) {
       statusEl.textContent = msg;
       statusEl.classList.remove("hidden");
@@ -104,20 +147,24 @@
     function hideStatus() {
       statusEl.classList.add("hidden");
     }
+    function setDbg(el, text, cls) {
+      el.textContent = text;
+      el.classList.remove("ok", "warn", "bad");
+      if (cls) el.classList.add(cls);
+    }
 
-    // ===== 매 프레임: video → canvas (거울 모드) + 검출된 박스 그리기 =====
+    // ===== 매 프레임 그리기 (60fps) =====
     function drawFrame() {
       if (video.readyState >= video.HAVE_CURRENT_DATA) {
-        // 1) 카메라 영상 그리기 (좌우 반전)
         ctx.save();
         ctx.scale(-1, 1);
         ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
         ctx.restore();
 
-        // 2) 검출된 카드 영역 위에 빨간 박스
-        if (latestQuad) {
+        // 최근 검출 결과를 KEEP_DETECTION_MS 동안 유지 — 깜빡임 방지
+        if (latestQuad && performance.now() - lastDetectionAt < KEEP_DETECTION_MS) {
           ctx.strokeStyle = "#ff0000";
-          ctx.lineWidth = Math.max(4, canvas.width * 0.005);
+          ctx.lineWidth = Math.max(4, canvas.width * 0.006);
           ctx.lineJoin = "round";
           ctx.beginPath();
           ctx.moveTo(latestQuad[0].x, latestQuad[0].y);
@@ -149,7 +196,6 @@
           });
           video.srcObject = stream;
           video.onloadedmetadata = () => {
-            // canvas 내부 해상도 = 비디오 원본 해상도 (검출 정밀도 위해)
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             video
@@ -166,14 +212,13 @@
       });
     }
 
-    // ===== OpenCV.js 비동기 로드 =====
+    // ===== OpenCV.js 로드 =====
     function loadOpenCV() {
       return new Promise((resolve, reject) => {
         const script = document.createElement("script");
         script.src = "https://docs.opencv.org/4.8.0/opencv.js";
         script.async = true;
         script.onload = () => {
-          // OpenCV.js는 WASM 모듈 초기화가 끝나야 cv.Mat 등이 준비됨
           if (window.cv && window.cv.Mat) {
             resolve();
           } else {
@@ -186,12 +231,11 @@
       });
     }
 
-    // ===== 카드(가장 큰 4각형) 검출 =====
+    // ===== 카드 검출 =====
     function detectCard() {
-      if (!opencvReady) return;
-      if (canvas.width === 0 || canvas.height === 0) return;
+      if (!opencvReady || canvas.width === 0) return;
 
-      let src, gray, blurred, edges, contours, hierarchy;
+      let src, gray, blurred, edges, contours, hierarchy, kernel;
       try {
         src = cv.imread(canvas);
         gray = new cv.Mat();
@@ -200,82 +244,115 @@
         contours = new cv.MatVector();
         hierarchy = new cv.Mat();
 
-        // 1) 그레이스케일 변환
+        // 그레이스케일
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        // 2) 잡음 제거 블러
+        // 잡음 제거
         cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-        // 3) 에지 검출
-        cv.Canny(blurred, edges, 50, 150);
-        // 4) 외곽선 추출
+        // 에지 검출 — 임계값을 낮춰서 약한 에지도 잡음
+        cv.Canny(blurred, edges, 30, 100);
+        // morphology dilate — 끊긴 에지를 연결해서 폐곡선 만들기
+        kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        cv.dilate(edges, edges, kernel);
+        // 외곽선만 추출 (내부 contour 무시 — 빠름)
         cv.findContours(
           edges,
           contours,
           hierarchy,
-          cv.RETR_LIST,
+          cv.RETR_EXTERNAL,
           cv.CHAIN_APPROX_SIMPLE
         );
 
-        // 5) 4각형 + 일정 면적 이상 중 가장 큰 것 선택
+        const totalContours = contours.size();
+        const minArea = canvas.width * canvas.height * 0.02; // 화면의 2%
+        let quadCount = 0;
         let bestQuad = null;
         let maxArea = 0;
-        const minArea = canvas.width * canvas.height * 0.03; // 화면의 3% 이상
 
-        for (let i = 0; i < contours.size(); i++) {
+        for (let i = 0; i < totalContours; i++) {
           const cnt = contours.get(i);
           const peri = cv.arcLength(cnt, true);
           const approx = new cv.Mat();
-          // epsilon 0.02 * 둘레 — 카드처럼 직각인 도형을 4점으로 근사하기에 적당
-          cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+          // epsilon 0.04 — 살짝 둥글게 단순화해서 4점이 잘 나옴
+          cv.approxPolyDP(cnt, approx, 0.04 * peri, true);
 
           if (approx.rows === 4) {
             const area = cv.contourArea(approx);
-            if (area > minArea && area > maxArea) {
-              maxArea = area;
-              const pts = [];
-              for (let j = 0; j < 4; j++) {
-                pts.push({
-                  x: approx.data32S[j * 2],
-                  y: approx.data32S[j * 2 + 1],
-                });
+            // 볼록 4각형 + 충분히 큰 것만
+            if (area > minArea && cv.isContourConvex(approx)) {
+              quadCount++;
+              if (area > maxArea) {
+                maxArea = area;
+                const pts = [];
+                for (let j = 0; j < 4; j++) {
+                  pts.push({
+                    x: approx.data32S[j * 2],
+                    y: approx.data32S[j * 2 + 1],
+                  });
+                }
+                bestQuad = pts;
               }
-              bestQuad = pts;
             }
           }
           approx.delete();
           cnt.delete();
         }
 
+        // 디버그 패널 업데이트
+        setDbg(dbgContours, String(totalContours));
+        setDbg(dbgQuads, String(quadCount), quadCount > 0 ? "ok" : "warn");
+        setDbg(
+          dbgArea,
+          bestQuad
+            ? `${(maxArea / (canvas.width * canvas.height) * 100).toFixed(1)}%`
+            : "-"
+        );
+
         if (bestQuad) {
           latestQuad = bestQuad;
-          // 사용자 요구사항: 네 모서리 좌표 콘솔 출력
+          lastDetectionAt = performance.now();
+          setDbg(dbgState, "검출됨", "ok");
           console.log("🃏 카드 모서리 4점:", bestQuad);
         } else {
-          latestQuad = null;
+          setDbg(dbgState, "탐색 중", "warn");
+        }
+
+        // FPS 측정 (1초마다 갱신)
+        detectCount++;
+        const now = performance.now();
+        if (now - lastFpsAt >= 1000) {
+          const fps = (detectCount * 1000) / (now - lastFpsAt);
+          setDbg(dbgFps, fps.toFixed(1));
+          detectCount = 0;
+          lastFpsAt = now;
         }
       } catch (err) {
         console.error("카드 검출 오류:", err);
+        setDbg(dbgState, "오류", "bad");
       } finally {
-        // WASM 메모리 누수 방지 — 사용한 Mat은 반드시 delete
         if (src) src.delete();
         if (gray) gray.delete();
         if (blurred) blurred.delete();
         if (edges) edges.delete();
         if (contours) contours.delete();
         if (hierarchy) hierarchy.delete();
+        if (kernel) kernel.delete();
       }
     }
 
     // ===== 초기화 =====
     async function init() {
       try {
+        setDbg(dbgState, "카메라 시작…");
         await startCamera();
+        setDbg(dbgState, "OpenCV 로딩…", "warn");
         showStatus("OpenCV 로딩 중…\n(8MB, 첫 실행 시 시간이 걸려요)");
         await loadOpenCV();
         opencvReady = true;
+        setDbg(dbgState, "탐색 중", "warn");
         console.log("OpenCV.js 준비 완료, 카드 검출 시작");
         hideStatus();
-        // 5fps로 검출 (200ms 간격)
-        detectionTimer = setInterval(detectCard, 200);
+        // 5fps 검출 루프
+        setInterval(detectCard, 200);
       } catch (err) {
         console.error(err);
         let msg = err.message || err.name || "알 수 없는 오류";
@@ -287,6 +364,7 @@
           msg = "카메라가 다른 앱에서 사용 중입니다.";
         }
         showStatus(msg);
+        setDbg(dbgState, "초기화 실패", "bad");
       }
     }
 
