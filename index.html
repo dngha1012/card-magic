@@ -142,13 +142,13 @@
     const ROBOFLOW_MODEL_ID = "playing-cards-ow27d";
     const ROBOFLOW_VERSION = 4;
     const DETECT_INTERVAL_MS = 150;       // 호출 시도 간격 — 실제 fps는 응답에 의해 자연 제한
-    const KEEP_DETECTION_MS = 1500;       // 박스 유지 시간 — 예측으로 계속 이동하니까 길게 둠
+    const KEEP_DETECTION_MS = 800;        // 박스 유지 시간 — 너무 길면 옛 위치에 머무름
     const DETECT_INPUT_WIDTH = 416;       // 모델 기본 입력 크기
     const JPEG_QUALITY = 0.5;
     const MIN_CONFIDENCE = 0.4;
-    const LERP_FACTOR = 0.45;             // lerp 강도 — 부드럽지만 빠르게 따라옴
-    const PREDICT_FACTOR = 0.85;          // 예측 강도 0~1 (1=완전 예측, 0=예측 안 함)
-    const VELOCITY_SMOOTHING = 0.6;       // 새 측정 속도 비율 (EMA)
+    const LERP_FACTOR = 0.55;             // lerp 강도 — 0.55면 약 3프레임 만에 새 위치 도달
+    const PREDICT_FACTOR = 0;             // 예측 끄기 (카드가 정지/방향전환 시 박스가 카드를 벗어나는 문제)
+    const VELOCITY_SMOOTHING = 0.6;       // 새 측정 속도 비율 (EMA) — 현재 사용 안 함
 
     // ===== DOM =====
     const video = document.getElementById("video");
