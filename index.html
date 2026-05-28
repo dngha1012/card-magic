@@ -153,7 +153,11 @@
     const DETECT_INPUT_WIDTH = 416;       // 모델 기본 입력 크기
     const JPEG_QUALITY = 0.5;
     const MIN_CONFIDENCE = 0.5;           // 흔들리는 약한 검출 제거
-    const LERP_FACTOR = 0.25;             // 약하게 — 매 검출마다 좌표가 살짝 흔들려도 박스가 안 튐
+    const LERP_FACTOR_POS = 0.25;         // 위치 보간
+    const LERP_FACTOR_SIZE = 0.10;        // 크기 보간 — 위치보다 훨씬 천천히 (필터 펄럭임 방지)
+    const UNION_EXPAND = 0.05;            // union 박스를 바깥쪽으로 5% 확장 (카드 가장자리 완전히 덮음)
+    const UNION_POS_LERP = 0.25;          // union 자체 위치 lerp
+    const UNION_SIZE_LERP = 0.10;         // union 자체 크기 lerp
     const PREDICT_FACTOR = 0;             // 예측 끔
     const VELOCITY_SMOOTHING = 0.6;       // 현재 사용 안 함
 
@@ -191,6 +195,7 @@
     let filterCard = null;        // 표시할 필터 카드 (예: "8C")
     let filterImage = null;       // 로드 완료된 필터 카드 이미지 (Image 객체)
     let filterImageLoading = false;
+    let smoothedUnion = null;     // union 박스 자체에 별도 평활화 적용 (펄럭임 방지)
 
     // ===== UI =====
     function showStatus(msg) {
@@ -359,6 +364,7 @@
       filterCard = null;
       filterImage = null;
       recentClasses = [];
+      smoothedUnion = null;
       setDbg(dbgConfirmed, "-");
       setDbg(dbgFilter, "-");
       console.log("🃏 마술 재시작");
@@ -386,20 +392,18 @@
           ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
           const lineWidth = Math.max(4, canvas.width * 0.005);
 
-          // 1) 모든 박스에 lerp 적용 (위치 갱신)
+          // 1) 모든 박스에 lerp 적용 (위치는 빠르게, 크기는 천천히)
           for (const d of renderedDetections) {
             const elapsed = now - d.lastTargetAt;
             const predictedX = d.target.x + d.velocity.x * elapsed * PREDICT_FACTOR;
             const predictedY = d.target.y + d.velocity.y * elapsed * PREDICT_FACTOR;
-            d.box.x += (predictedX - d.box.x) * LERP_FACTOR;
-            d.box.y += (predictedY - d.box.y) * LERP_FACTOR;
-            d.box.w += (d.target.w - d.box.w) * LERP_FACTOR;
-            d.box.h += (d.target.h - d.box.h) * LERP_FACTOR;
+            d.box.x += (predictedX - d.box.x) * LERP_FACTOR_POS;
+            d.box.y += (predictedY - d.box.y) * LERP_FACTOR_POS;
+            d.box.w += (d.target.w - d.box.w) * LERP_FACTOR_SIZE;
+            d.box.h += (d.target.h - d.box.h) * LERP_FACTOR_SIZE;
           }
 
-          // 2) 확정된 카드의 모든 박스를 union — 카드 코너 2개를 합쳐서 카드 전체 영역으로
-          //    (Roboflow playing-cards-ow27d 모델은 카드 전체가 아니라 좌상/우하 코너 표기만
-          //     검출하므로, 같은 클래스의 박스들을 외접 사각형으로 묶어야 카드 전체가 됨)
+          // 2) 확정된 카드의 모든 박스를 union — 코너 박스들을 카드 전체로 합침
           let confirmedUnion = null;
           if (confirmedCard && filterImage) {
             const matches = renderedDetections.filter((d) => d.class === confirmedCard);
@@ -412,16 +416,30 @@
                 maxX = Math.max(maxX, x + w);
                 maxY = Math.max(maxY, y + h);
               }
-              confirmedUnion = {
-                x: minX,
-                y: minY,
-                w: maxX - minX,
-                h: maxY - minY,
+              // raw union — 매 검출마다 약간씩 달라지므로 아래에서 별도 평활화
+              const rawW = maxX - minX;
+              const rawH = maxY - minY;
+              const rawUnion = {
+                x: minX - rawW * UNION_EXPAND,         // 5% 바깥 확장
+                y: minY - rawH * UNION_EXPAND,
+                w: rawW * (1 + UNION_EXPAND * 2),
+                h: rawH * (1 + UNION_EXPAND * 2),
               };
+
+              // smoothedUnion: union 자체에 별도 lerp — 코너 박스 흔들림 흡수
+              if (smoothedUnion) {
+                smoothedUnion.x += (rawUnion.x - smoothedUnion.x) * UNION_POS_LERP;
+                smoothedUnion.y += (rawUnion.y - smoothedUnion.y) * UNION_POS_LERP;
+                smoothedUnion.w += (rawUnion.w - smoothedUnion.w) * UNION_SIZE_LERP;
+                smoothedUnion.h += (rawUnion.h - smoothedUnion.h) * UNION_SIZE_LERP;
+              } else {
+                smoothedUnion = { ...rawUnion };
+              }
+              confirmedUnion = smoothedUnion;
             }
           }
 
-          // 3) 필터 카드 이미지를 union 영역에 그림 (카드 전체 덮음)
+          // 3) 필터 카드 이미지를 평활화된 union 영역에 그림
           if (confirmedUnion) {
             ctx.drawImage(
               filterImage,
