@@ -159,7 +159,6 @@
 
     // ===== 필터 마술 설정 =====
     const CONFIRM_FRAMES = 5;             // 같은 카드가 연속 N프레임 인식되면 확정
-    const CARD_IMG_BASE = "https://cdn.jsdelivr.net/gh/htdebeer/SVG-cards/png/2x";
 
     // ===== DOM =====
     const video = document.getElementById("video");
@@ -252,69 +251,96 @@
       location.reload();
     };
 
-    // ===== 카드 클래스명 → SVG-cards 파일명 변환 =====
-    // Roboflow가 "5H", "JC", "10D", "TH", "AS" 같은 형태로 반환한다고 가정
-    function classToFilename(cls) {
+    // ===== 카드 클래스명 변환 =====
+    // Roboflow는 "5H", "10H", "JC" 같은 짧은 코드를 반환
+
+    // 긴 이름: "5_of_hearts" (htdebeer/SVG-cards 용)
+    function classToLongName(cls) {
       if (!cls) return null;
       const s = String(cls).trim().toUpperCase();
-
-      // 형식 1: 짧은 코드 (예: 5H, JC, 10D, TH, AS)
       const m = s.match(/^(A|J|Q|K|T|10|[2-9])([HDCS])$/);
-      if (m) {
-        const rank = m[1];
-        const suit = m[2];
-        const rankName = { A: "ace", J: "jack", Q: "queen", K: "king", T: "10" }[rank] || rank;
-        const suitName = { H: "hearts", D: "diamonds", C: "clubs", S: "spades" }[suit];
-        return `${rankName}_of_${suitName}`;
-      }
-
-      // 형식 2: 풀네임 (예: "5_of_hearts", "JACK_OF_CLUBS")
-      const m2 = s.toLowerCase().match(
-        /^(ace|jack|queen|king|10|[2-9])_of_(hearts|diamonds|clubs|spades)$/
-      );
-      if (m2) return s.toLowerCase();
-
-      return null;
+      if (!m) return null;
+      const rank = m[1];
+      const suit = m[2];
+      const rankName = { A: "ace", J: "jack", Q: "queen", K: "king", T: "10" }[rank] || rank;
+      const suitName = { H: "hearts", D: "diamonds", C: "clubs", S: "spades" }[suit];
+      return `${rankName}_of_${suitName}`;
     }
 
-    function cardImageUrl(cls) {
-      const fname = classToFilename(cls);
-      return fname ? `${CARD_IMG_BASE}/${fname}.png` : null;
+    // 짧은 이름: "5H", "0H" (10→0) (deckofcardsapi.com 용)
+    function classToShortName(cls) {
+      if (!cls) return null;
+      const s = String(cls).trim().toUpperCase();
+      const m = s.match(/^(A|J|Q|K|T|10|[2-9])([HDCS])$/);
+      if (!m) return null;
+      let rank = m[1];
+      if (rank === "10" || rank === "T") rank = "0"; // deckofcardsapi 규칙
+      return `${rank}${m[2]}`;
+    }
+
+    // 우선순위 순서로 시도할 이미지 URL 후보
+    function cardImageCandidates(cls) {
+      const urls = [];
+      const long = classToLongName(cls);
+      if (long) {
+        urls.push(`https://cdn.jsdelivr.net/gh/htdebeer/SVG-cards/png/2x/${long}.png`);
+      }
+      const short = classToShortName(cls);
+      if (short) {
+        urls.push(`https://deckofcardsapi.com/static/img/${short}.png`);
+      }
+      return urls;
     }
 
     // ===== 52장 중 확정된 카드를 제외한 51장에서 랜덤 1장 =====
     function pickFilterCard(excludeClass) {
       const ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
       const suits = ["H", "D", "C", "S"];
-      const exclude = (classToFilename(excludeClass) || "").toLowerCase();
+      const excludeLong = (classToLongName(excludeClass) || "").toLowerCase();
       const pool = [];
       for (const r of ranks) {
         for (const su of suits) {
           const card = r + su;
-          if (classToFilename(card) !== exclude) pool.push(card);
+          if (classToLongName(card) !== excludeLong) pool.push(card);
         }
       }
       return pool[Math.floor(Math.random() * pool.length)];
     }
 
-    // ===== 필터 이미지 비동기 로드 =====
+    // ===== 필터 이미지 로드 — 여러 CDN을 순서대로 시도 =====
     function loadFilterImage(cls) {
-      const url = cardImageUrl(cls);
-      if (!url) return;
-      filterImageLoading = true;
+      const urls = cardImageCandidates(cls);
+      if (urls.length === 0) {
+        console.error(`이미지 URL 후보 없음 (클래스 형식 모름): ${cls}`);
+        setDbg(dbgFilter, `${cls} ?`, "bad");
+        return;
+      }
       filterImage = null;
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        filterImage = img;
-        filterImageLoading = false;
-        console.log(`🎴 필터 이미지 로드 완료: ${cls} (${url})`);
-      };
-      img.onerror = () => {
-        filterImageLoading = false;
-        console.error(`필터 이미지 로드 실패: ${url}`);
-      };
-      img.src = url;
+      filterImageLoading = true;
+      setDbg(dbgFilter, `${cls} 로드중`, "warn");
+
+      function tryNext(idx) {
+        if (idx >= urls.length) {
+          filterImageLoading = false;
+          console.error(`필터 이미지 모든 후보 실패: ${cls}`);
+          setDbg(dbgFilter, `${cls} 실패`, "bad");
+          return;
+        }
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          filterImage = img;
+          filterImageLoading = false;
+          console.log(`🎴 필터 이미지 로드 완료: ${urls[idx]}`);
+          setDbg(dbgFilter, cls, "ok");
+        };
+        img.onerror = () => {
+          console.warn(`이미지 로드 실패, 다음 URL 시도: ${urls[idx]}`);
+          tryNext(idx + 1);
+        };
+        img.src = urls[idx];
+      }
+      tryNext(0);
     }
 
     // ===== 카드 확정 + 필터 선택 =====
@@ -360,47 +386,73 @@
           ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
           const lineWidth = Math.max(4, canvas.width * 0.005);
 
+          // 1) 모든 박스에 lerp 적용 (위치 갱신)
           for (const d of renderedDetections) {
-            // [예측] target 시각 이후 흐른 시간만큼 속도로 박스 이동
             const elapsed = now - d.lastTargetAt;
             const predictedX = d.target.x + d.velocity.x * elapsed * PREDICT_FACTOR;
             const predictedY = d.target.y + d.velocity.y * elapsed * PREDICT_FACTOR;
-
-            // [lerp] 현재 표시 위치를 예측 위치 쪽으로 부드럽게
             d.box.x += (predictedX - d.box.x) * LERP_FACTOR;
             d.box.y += (predictedY - d.box.y) * LERP_FACTOR;
             d.box.w += (d.target.w - d.box.w) * LERP_FACTOR;
             d.box.h += (d.target.h - d.box.h) * LERP_FACTOR;
+          }
+
+          // 2) 확정된 카드의 모든 박스를 union — 카드 코너 2개를 합쳐서 카드 전체 영역으로
+          //    (Roboflow playing-cards-ow27d 모델은 카드 전체가 아니라 좌상/우하 코너 표기만
+          //     검출하므로, 같은 클래스의 박스들을 외접 사각형으로 묶어야 카드 전체가 됨)
+          let confirmedUnion = null;
+          if (confirmedCard && filterImage) {
+            const matches = renderedDetections.filter((d) => d.class === confirmedCard);
+            if (matches.length > 0) {
+              let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+              for (const m of matches) {
+                const { x, y, w, h } = m.box;
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x + w);
+                maxY = Math.max(maxY, y + h);
+              }
+              confirmedUnion = {
+                x: minX,
+                y: minY,
+                w: maxX - minX,
+                h: maxY - minY,
+              };
+            }
+          }
+
+          // 3) 필터 카드 이미지를 union 영역에 그림 (카드 전체 덮음)
+          if (confirmedUnion) {
+            ctx.drawImage(
+              filterImage,
+              confirmedUnion.x,
+              confirmedUnion.y,
+              confirmedUnion.w,
+              confirmedUnion.h
+            );
+          }
+
+          // 4) 그 외 박스/라벨 그리기 (확정 카드는 필터로 가렸으니 제외)
+          for (const d of renderedDetections) {
+            if (confirmedCard && filterImage && d.class === confirmedCard) continue;
 
             const { x, y, w, h } = d.box;
+            ctx.strokeStyle = "#ff0000";
+            ctx.lineWidth = lineWidth;
+            ctx.lineJoin = "round";
+            ctx.strokeRect(x, y, w, h);
 
-            // 확정된 카드라면 필터 이미지를 박스에 맞춰 덮어씌움
-            const isConfirmedTarget =
-              confirmedCard && d.class === confirmedCard && filterImage;
+            const label = `${d.class}  ${Math.round(d.confidence * 100)}%`;
+            const metrics = ctx.measureText(label);
+            const labelW = metrics.width + padding * 2;
+            const labelY = y - labelHeight >= 0 ? y - labelHeight : y;
 
-            if (isConfirmedTarget) {
-              // 필터 카드 이미지를 박스 좌표에 정확히 그림
-              // (거울 모드라 그림이 좌우 반전되는 게 자연스럽지 않다면 여기서 scale(-1,1) 가능)
-              ctx.drawImage(filterImage, x, y, w, h);
-            } else {
-              // 미확정 상태: 빨간 박스 + 라벨 (검출 확인용)
-              ctx.strokeStyle = "#ff0000";
-              ctx.lineWidth = lineWidth;
-              ctx.lineJoin = "round";
-              ctx.strokeRect(x, y, w, h);
+            ctx.fillStyle = "#ff0000";
+            ctx.fillRect(x, labelY, labelW, labelHeight);
 
-              const label = `${d.class}  ${Math.round(d.confidence * 100)}%`;
-              const metrics = ctx.measureText(label);
-              const labelW = metrics.width + padding * 2;
-              const labelY = y - labelHeight >= 0 ? y - labelHeight : y;
-
-              ctx.fillStyle = "#ff0000";
-              ctx.fillRect(x, labelY, labelW, labelHeight);
-
-              ctx.fillStyle = "#fff";
-              ctx.textBaseline = "middle";
-              ctx.fillText(label, x + padding, labelY + labelHeight / 2);
-            }
+            ctx.fillStyle = "#fff";
+            ctx.textBaseline = "middle";
+            ctx.fillText(label, x + padding, labelY + labelHeight / 2);
           }
         }
       }
