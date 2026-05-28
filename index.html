@@ -440,7 +440,12 @@
           }
 
           // 3) 필터 카드 이미지를 평활화된 union 영역에 그림
+          //    multiply 블렌드 + 살짝 반투명 → 진짜 카드 표면의 빛/음영/손가락 그림자가
+          //    필터에 자연스럽게 비침. 평면 스티커가 아니라 진짜 카드처럼 보임.
           if (confirmedUnion) {
+            ctx.save();
+            ctx.globalCompositeOperation = "multiply";
+            ctx.globalAlpha = 0.92;
             ctx.drawImage(
               filterImage,
               confirmedUnion.x,
@@ -448,6 +453,7 @@
               confirmedUnion.w,
               confirmedUnion.h
             );
+            ctx.restore();
           }
 
           // 4) 그 외 박스/라벨 그리기 (확정 카드는 필터로 가렸으니 제외)
